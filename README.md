@@ -50,6 +50,8 @@ accelerate launch ./training_eval_emotion/run_parler_tts_training.py \
     --train_split_name "train+train[:20%]+test.clean+test.other" \
     --eval_dataset_name "./ft_with_monitor/ParlerEmotionTest" \
     --eval_split_name "eval" \
+    --eval_dataset_config_name "default" \
+    --eval_metadata_dataset_name "None" \
     --emotion_column_name "style" \
     --target_audio_column_name "audio" \
     --description_column_name "text_description" \
