@@ -284,26 +284,68 @@ def main():
 
             if data_args.max_train_samples is not None:
                 raw_datasets["train"] = raw_datasets["train"].select(range(data_args.max_train_samples))
-
+        # Hardy: I took some modification here:
+        # The original one:
+        # if training_args.do_eval:
+        #     raw_datasets["eval"] = load_multiple_datasets(
+        #         accelerator,
+        #         data_args.eval_dataset_name if data_args.eval_dataset_name else data_args.train_dataset_name,
+        #         data_args.eval_dataset_config_name
+        #         if data_args.eval_dataset_config_name
+        #         else data_args.train_dataset_config_name,
+        #         metadata_dataset_names=data_args.eval_metadata_dataset_name,
+        #         splits=data_args.eval_split_name,
+        #         cache_dir=model_args.cache_dir,
+        #         num_proc=data_args.preprocessing_num_workers,
+        #         id_column_name=data_args.id_column_name,
+        #         columns_to_keep=columns_to_keep.values(),
+        #         prompt_column_name=data_args.prompt_column_name,
+        #         audio_column_name=data_args.target_audio_column_name,
+        #         sampling_rate=sampling_rate,
+        #         logger=logger,
+        #         # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
+        #     )
+        # The current one:
+        # Replace the evaluation dataset loading section (around line 289) with:
         if training_args.do_eval:
-            raw_datasets["eval"] = load_multiple_datasets(
-                accelerator,
-                data_args.eval_dataset_name if data_args.eval_dataset_name else data_args.train_dataset_name,
-                data_args.eval_dataset_config_name
-                if data_args.eval_dataset_config_name
-                else data_args.train_dataset_config_name,
-                metadata_dataset_names=data_args.eval_metadata_dataset_name,
-                splits=data_args.eval_split_name,
-                cache_dir=model_args.cache_dir,
-                num_proc=data_args.preprocessing_num_workers,
-                id_column_name=data_args.id_column_name,
-                columns_to_keep=columns_to_keep.values(),
-                prompt_column_name=data_args.prompt_column_name,
-                audio_column_name=data_args.target_audio_column_name,
-                sampling_rate=sampling_rate,
-                logger=logger,
-                # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
-            )
+            # Check if eval dataset is a local pre-saved dataset
+            if os.path.exists(data_args.eval_dataset_name) and os.path.isdir(data_args.eval_dataset_name):
+                # Load pre-saved dataset directly
+                with accelerator.local_main_process_first():
+                    eval_dataset_dict = datasets.load_from_disk(data_args.eval_dataset_name)
+                    # Get the first split if it's a DatasetDict
+                    if isinstance(eval_dataset_dict, datasets.DatasetDict):
+                        # Use the split specified or default to first available split
+                        if data_args.eval_split_name in eval_dataset_dict:
+                            raw_datasets["eval"] = eval_dataset_dict[data_args.eval_split_name]
+                        else:
+                            # Use the first available split
+                            first_split = list(eval_dataset_dict.keys())[0]
+                            raw_datasets["eval"] = eval_dataset_dict[first_split]
+                            logger.info(
+                                f"Eval split '{data_args.eval_split_name}' not found, using '{first_split}' instead")
+                    else:
+                        raw_datasets["eval"] = eval_dataset_dict
+            else:
+                # Original loading logic for HF hub datasets
+                raw_datasets["eval"] = load_multiple_datasets(
+                    accelerator,
+                    data_args.eval_dataset_name if data_args.eval_dataset_name else data_args.train_dataset_name,
+                    data_args.eval_dataset_config_name
+                    if data_args.eval_dataset_config_name
+                    else data_args.train_dataset_config_name,
+                    metadata_dataset_names=data_args.eval_metadata_dataset_name,
+                    splits=data_args.eval_split_name,
+                    cache_dir=model_args.cache_dir,
+                    num_proc=data_args.preprocessing_num_workers,
+                    id_column_name=data_args.id_column_name,
+                    columns_to_keep=columns_to_keep.values(),
+                    prompt_column_name=data_args.prompt_column_name,
+                    audio_column_name=data_args.target_audio_column_name,
+                    sampling_rate=sampling_rate,
+                    logger=logger,
+                    # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
+                )
 
             if data_args.max_eval_samples is not None:
                 with accelerator.local_main_process_first():
