@@ -480,6 +480,7 @@ def main():
         # T5 doesn't support fp16
         autocast_kwargs = AutocastKwargs(enabled=(mixed_precision != "fp16"))
 
+        # Hardy: The following is the modified Section B of Encode audio
         # Now we encode the audio labels with encodec.
         ####### B. Encode audio
 
@@ -557,85 +558,113 @@ def main():
             return output
 
         for split in vectorized_datasets:
-            data_loader = DataLoader(
-                raw_datasets[split],
-                batch_size=training_args.audio_encoder_per_device_batch_size,
-                collate_fn=encoder_data_collator,
-                num_workers=training_args.dataloader_num_workers,
-                pin_memory=True,
-            )
-            data_loader = accelerator.prepare(data_loader)
-            total_inference_steps = len(data_loader)
+            # Check if this split has audio data
+            if target_audio_column_name in raw_datasets[split].column_names:
+                logger.info(f"Encoding audio for {split} split...")
 
-            start_step = get_last_codec_checkpoint_step(os.path.join(data_args.temporary_save_to_disk, split))
-            accelerator.wait_for_everyone()
-            if start_step > 0:
-                logger.info(f"Resuming {split} from step {start_step}")
-                # efficiently skip the first n batches
-                start_step += 1
-                data_loader = skip_first_batches(data_loader, start_step)
-
-            all_generated_labels = []
-            all_lens = []
-            if start_step < total_inference_steps:
-                for i, batch in enumerate(tqdm(data_loader, disable=not accelerator.is_local_main_process)):
-                    cur_step = start_step + i
-                    generate_labels = apply_audio_decoder(batch)
-                    generate_labels = accelerator.pad_across_processes(generate_labels, dim=1, pad_index=0)
-                    generate_labels = accelerator.gather_for_metrics(generate_labels)
-
-                    if accelerator.is_main_process:
-                        lab = generate_labels["labels"].cpu().transpose(1, 2).to(torch.int16)
-                        rat = generate_labels["ratio"].cpu().squeeze(1)
-                        lens = generate_labels["len_audio"].cpu().squeeze(1)
-                        lab = [l[:, : int(ratio * length)] for (l, ratio, length) in zip(lab, rat, lens)]
-
-                        all_generated_labels.extend(lab)
-                        all_lens.extend(lens)
-
-                        if ((cur_step + 1) % data_args.save_codec_steps == 0) or (
-                            cur_step == total_inference_steps - 1
-                        ):
-                            tmp_labels = Dataset.from_dict({"labels": all_generated_labels, "target_length": all_lens})
-                            tmp_labels = tmp_labels.map(
-                                postprocess_dataset,
-                                num_proc=data_args.preprocessing_num_workers,  # this one is resource consuming if many processor.
-                                input_columns=["labels"],
-                                desc="Postprocessing labeling",
-                            )
-                            save_codec_checkpoint(
-                                os.path.join(data_args.temporary_save_to_disk, split), tmp_labels, cur_step
-                            )
-                            all_generated_labels = []
-                            all_lens = []
-
-                accelerator.wait_for_everyone()
-
-            if accelerator.is_main_process and len(all_generated_labels) > 0:
-                tmp_labels = Dataset.from_dict({"labels": all_generated_labels, "target_length": all_lens})
-                tmp_labels = tmp_labels.map(
-                    postprocess_dataset,
-                    num_proc=data_args.preprocessing_num_workers,  # this one is resource consuming if many processor.
-                    input_columns=["labels"],
-                    desc="Postprocessing labeling",
+                data_loader = DataLoader(
+                    raw_datasets[split],
+                    batch_size=training_args.audio_encoder_per_device_batch_size,
+                    collate_fn=encoder_data_collator,
+                    num_workers=training_args.dataloader_num_workers,
+                    pin_memory=True,
                 )
-                save_codec_checkpoint(os.path.join(data_args.temporary_save_to_disk, split), tmp_labels, cur_step)
+                data_loader = accelerator.prepare(data_loader)
+                total_inference_steps = len(data_loader)
+
+                start_step = get_last_codec_checkpoint_step(os.path.join(data_args.temporary_save_to_disk, split))
+                accelerator.wait_for_everyone()
+                if start_step > 0:
+                    logger.info(f"Resuming {split} from step {start_step}")
+                    # efficiently skip the first n batches
+                    start_step += 1
+                    data_loader = skip_first_batches(data_loader, start_step)
+
                 all_generated_labels = []
                 all_lens = []
-            accelerator.wait_for_everyone()
+                if start_step < total_inference_steps:
+                    for i, batch in enumerate(tqdm(data_loader, disable=not accelerator.is_local_main_process)):
+                        cur_step = start_step + i
+                        generate_labels = apply_audio_decoder(batch)
+                        generate_labels = accelerator.pad_across_processes(generate_labels, dim=1, pad_index=0)
+                        generate_labels = accelerator.gather_for_metrics(generate_labels)
 
-            del all_generated_labels
-            accelerator.wait_for_everyone()
+                        if accelerator.is_main_process:
+                            lab = generate_labels["labels"].cpu().transpose(1, 2).to(torch.int16)
+                            rat = generate_labels["ratio"].cpu().squeeze(1)
+                            lens = generate_labels["len_audio"].cpu().squeeze(1)
+                            lab = [l[:, : int(ratio * length)] for (l, ratio, length) in zip(lab, rat, lens)]
 
-            with accelerator.local_main_process_first():
-                tmp_labels = load_all_codec_checkpoints(os.path.join(data_args.temporary_save_to_disk, split)).select(
-                    range(len(vectorized_datasets[split]))
-                )
-                logger.info(f"Concatenating {split}: {tmp_labels} with {vectorized_datasets[split]}")
-                vectorized_datasets[split] = concatenate_datasets([vectorized_datasets[split], tmp_labels], axis=1)
+                            all_generated_labels.extend(lab)
+                            all_lens.extend(lens)
+
+                            if ((cur_step + 1) % data_args.save_codec_steps == 0) or (
+                                    cur_step == total_inference_steps - 1
+                            ):
+                                tmp_labels = Dataset.from_dict(
+                                    {"labels": all_generated_labels, "target_length": all_lens})
+                                tmp_labels = tmp_labels.map(
+                                    postprocess_dataset,
+                                    num_proc=data_args.preprocessing_num_workers,
+                                    # this one is resource consuming if many processor.
+                                    input_columns=["labels"],
+                                    desc="Postprocessing labeling",
+                                )
+                                save_codec_checkpoint(
+                                    os.path.join(data_args.temporary_save_to_disk, split), tmp_labels, cur_step
+                                )
+                                all_generated_labels = []
+                                all_lens = []
+
+                    accelerator.wait_for_everyone()
+
+                if accelerator.is_main_process and len(all_generated_labels) > 0:
+                    tmp_labels = Dataset.from_dict({"labels": all_generated_labels, "target_length": all_lens})
+                    tmp_labels = tmp_labels.map(
+                        postprocess_dataset,
+                        num_proc=data_args.preprocessing_num_workers,
+                        # this one is resource consuming if many processor.
+                        input_columns=["labels"],
+                        desc="Postprocessing labeling",
+                    )
+                    save_codec_checkpoint(os.path.join(data_args.temporary_save_to_disk, split), tmp_labels, cur_step)
+                    all_generated_labels = []
+                    all_lens = []
+                accelerator.wait_for_everyone()
+
+                del all_generated_labels
+                accelerator.wait_for_everyone()
+
+                with accelerator.local_main_process_first():
+                    tmp_labels = load_all_codec_checkpoints(
+                        os.path.join(data_args.temporary_save_to_disk, split)).select(
+                        range(len(vectorized_datasets[split]))
+                    )
+                    logger.info(f"Concatenating {split}: {tmp_labels} with {vectorized_datasets[split]}")
+                    vectorized_datasets[split] = concatenate_datasets([vectorized_datasets[split], tmp_labels], axis=1)
+            else:
+                logger.info(f"Skipping audio encoding for {split} split (no audio column found)")
+                # For eval dataset without audio, we need to add dummy labels and target_length
+                # so the dataset structure matches what's expected downstream
+                with accelerator.local_main_process_first():
+                    def add_dummy_audio_fields(example):
+                        # Add dummy labels and target_length for compatibility
+                        # These won't be used during evaluation since we're generating audio
+                        example["labels"] = [[audio_encoder_bos_token_id] * num_codebooks]
+                        example["target_length"] = 1
+                        return example
+
+                    vectorized_datasets[split] = vectorized_datasets[split].map(
+                        add_dummy_audio_fields,
+                        num_proc=data_args.preprocessing_num_workers,
+                        desc=f"Adding dummy audio fields to {split}",
+                    )
 
         accelerator.free_memory()
-        del generate_labels, all_lens
+        if 'generate_labels' in locals():
+            del generate_labels
+            del all_lens
+            # Hardy: The modified section B is to here.
 
         with accelerator.local_main_process_first():
             # NOTE: filtering is done at the end because in the `datasets` library, caching audio files is done after most operations
