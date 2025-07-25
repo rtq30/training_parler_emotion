@@ -448,15 +448,33 @@ def main():
 
             return batch
 
+        # Hardy: I changed this --
+        # with accelerator.local_main_process_first():
+        #     # this is a trick to avoid to rewrite the entire audio column which takes ages
+        #     vectorized_datasets = raw_datasets.map(
+        #         pass_through_processors,
+        #         remove_columns=next(iter(raw_datasets.values())).column_names,
+        #         input_columns=[description_column_name, prompt_column_name],
+        #         num_proc=num_workers,
+        #         desc="preprocess datasets",
+        #     )
+        # Hardy: To this:
         with accelerator.local_main_process_first():
             # this is a trick to avoid to rewrite the entire audio column which takes ages
-            vectorized_datasets = raw_datasets.map(
-                pass_through_processors,
-                remove_columns=next(iter(raw_datasets.values())).column_names,
-                input_columns=[description_column_name, prompt_column_name],
-                num_proc=num_workers,
-                desc="preprocess datasets",
-            )
+            # Handle different datasets separately since they may have different columns
+            vectorized_datasets = {}
+            for split_name, dataset in raw_datasets.items():
+                vectorized_datasets[split_name] = dataset.map(
+                    pass_through_processors,
+                    remove_columns=dataset.column_names,  # Remove columns specific to this dataset
+                    input_columns=[description_column_name, prompt_column_name],
+                    num_proc=num_workers,
+                    desc=f"preprocess {split_name} dataset",
+                )
+
+            # Convert back to DatasetDict
+            vectorized_datasets = DatasetDict(vectorized_datasets)
+        # Hardy: up to here
 
         # We use Accelerate to perform distributed inference
         # T5 doesn't support fp16
