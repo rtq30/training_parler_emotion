@@ -1,5 +1,8 @@
 # Training Parler-TTS for emotion ability 
 # Highlight: These pipeline was embedded with the monitor function to trace the training process (particularly for emotion ability)
+
+However, this project is still in progress, where some bugs has not been fixed.
+
 ```
 #!/bin/bash
 #
