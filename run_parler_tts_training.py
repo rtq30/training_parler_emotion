@@ -461,11 +461,29 @@ def main():
 
         # Preprocessing the dataset.
         # We need to tokenize the texts.
-        def pass_through_processors(description, prompt):
+        # Hardy: I modified this:
+        # def pass_through_processors(description, prompt):
+        #     batch = {}
+        #
+        #     batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
+        #     batch["prompt_input_ids"] = prompt_tokenizer(prompt.strip())["input_ids"]
+        #
+        #     return batch
+        # Hardy: To this:
+        def pass_through_processors(examples):
+            """Process text fields and preserve metadata"""
             batch = {}
 
-            batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
-            batch["prompt_input_ids"] = prompt_tokenizer(prompt.strip())["input_ids"]
+            # Process text fields
+            batch["input_ids"] = description_tokenizer(examples[description_column_name].strip())["input_ids"]
+            batch["prompt_input_ids"] = prompt_tokenizer(examples[prompt_column_name].strip())["input_ids"]
+
+            # Preserve metadata fields that exist in the dataset
+            metadata_fields_to_preserve = ["style", "gender", "noise", "pitch", "speaking_rate", "test_category",
+                                           "number"]
+            for field in metadata_fields_to_preserve:
+                if field in examples:
+                    batch[field] = examples[field]
 
             return batch
 
@@ -479,25 +497,40 @@ def main():
         #         num_proc=num_workers,
         #         desc="preprocess datasets",
         #     )
-        # Hardy: To this:
+        # Hardy: To this (updated again):
         with accelerator.local_main_process_first():
-            # this is a trick to avoid to rewrite the entire audio column which takes ages
-            # Handle different datasets separately since they may have different columns
+            # Process each dataset split separately
             vectorized_datasets = {}
             for split_name, dataset in raw_datasets.items():
-                # Hardy: I added some debug logging here:
-                logger.info(f"DEBUG: {split_name} dataset info:")
+                # Debug logging
+                logger.info(f"DEBUG: Processing {split_name} dataset")
                 logger.info(f"DEBUG:   - Size: {len(dataset)}")
                 logger.info(f"DEBUG:   - Columns: {dataset.column_names}")
-                logger.info(
-                    f"DEBUG:   - First example keys: {list(dataset[0].keys()) if len(dataset) > 0 else 'Empty dataset'}")
+                if len(dataset) > 0:
+                    logger.info(f"DEBUG:   - First example keys: {list(dataset[0].keys())}")
+                    # Check if style column exists
+                    if "style" in dataset[0]:
+                        logger.info(f"DEBUG:   - First example style: {dataset[0]['style']}")
+
+                # Determine which columns to remove (everything except what we need)
+                columns_to_keep = {"input_ids", "prompt_input_ids", "style", "gender", "noise",
+                                   "pitch", "speaking_rate", "test_category", "number"}
+                columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
+
+                # Map the preprocessing function
                 vectorized_datasets[split_name] = dataset.map(
                     pass_through_processors,
-                    remove_columns=dataset.column_names,  # Remove columns specific to this dataset
-                    input_columns=[description_column_name, prompt_column_name],
+                    remove_columns=columns_to_remove,
                     num_proc=num_workers,
                     desc=f"preprocess {split_name} dataset",
+                    batched=False,  # Process one example at a time
                 )
+
+                # Verify the style column was preserved
+                if "style" in vectorized_datasets[split_name].column_names:
+                    logger.info(f"DEBUG: Successfully preserved 'style' column in {split_name} dataset")
+                else:
+                    logger.warning(f"WARNING: 'style' column not found in processed {split_name} dataset!")
 
             # Convert back to DatasetDict
             vectorized_datasets = DatasetDict(vectorized_datasets)
@@ -1505,6 +1538,14 @@ def main():
                     if not feasibility_test_done:
                     # if not feasibility_test_done and not training_args.post_training_generation_eval:
                         logger.info("*** Running feasibility test for evaluation models ***")
+
+                        # Hardy: I added a debug logging here
+                        # This verifies emotion labels were collected during generation
+                        if accelerator.is_main_process:
+                            logger.info(f"DEBUG: Collected {len(eval_emotion_labels)} emotion labels for SER evaluation")
+                            logger.info(
+                                f"DEBUG: compute_ser_metric={training_args.compute_ser_metric}, has_labels={len(eval_emotion_labels) > 0}")
+
                         if accelerator.is_local_main_process:
                             try:
                                 # Test with a small subset
