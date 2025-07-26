@@ -314,7 +314,7 @@ def main():
         #         # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
         #     )
         # The current one:
-        # Replace the evaluation dataset loading section (around line 289) with:
+        # Replace the evaluation dataset loading section with:
         if training_args.do_eval:
             # Check if eval dataset is a local pre-saved dataset
             if os.path.exists(data_args.eval_dataset_name) and os.path.isdir(data_args.eval_dataset_name):
@@ -360,6 +360,15 @@ def main():
                     raw_datasets["eval"] = (
                         raw_datasets["eval"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
                     )
+            # Hardy: I added a debug logging from here:
+            logger.info(f"DEBUG: Eval dataset info:")
+            logger.info(f"  - Type: {type(raw_datasets['eval'])}")
+            logger.info(f"  - Length: {len(raw_datasets['eval'])}")
+            logger.info(
+                f"  - Columns: {raw_datasets['eval'].column_names if hasattr(raw_datasets['eval'], 'column_names') else 'No column_names attribute'}")
+            if len(raw_datasets['eval']) > 0:
+                logger.info(f"  - First example keys: {list(raw_datasets['eval'][0].keys())}")
+            # Hardy: to here
 
     # 3. Next, let's load the config.
     config = ParlerTTSConfig.from_pretrained(
@@ -666,9 +675,16 @@ def main():
                 with accelerator.local_main_process_first():
                     def add_dummy_audio_fields(example):
                         # Add dummy labels and target_length for compatibility
-                        # These won't be used during evaluation since we're generating audio
-                        example["labels"] = [[audio_encoder_bos_token_id] * num_codebooks]
-                        example["target_length"] = 1
+                        # Use a target_length that's within the valid range to avoid filtering
+                        dummy_duration = (data_args.min_duration_in_seconds + data_args.max_duration_in_seconds) / 2
+                        dummy_target_length = int(dummy_duration * sampling_rate)
+
+                        # Create dummy labels with appropriate length
+                        # The actual values don't matter since we're generating audio
+                        dummy_label_length = dummy_target_length // 320  # Approximate codec downsampling
+                        example["labels"] = [[audio_encoder_bos_token_id] * num_codebooks for _ in
+                                             range(dummy_label_length)]
+                        example["target_length"] = dummy_target_length
                         return example
 
                     vectorized_datasets[split] = vectorized_datasets[split].map(
@@ -1111,6 +1127,18 @@ def main():
         accelerator,
         autocast_kwargs,
     ):
+        # Hardy: I added a debug logging here:
+        if batch is None:
+            logger.error("ERROR: Received None batch in eval_step")
+            return {"loss": torch.tensor(0.0)}
+
+        if not batch:
+            logger.error("ERROR: Received empty batch in eval_step")
+            return {"loss": torch.tensor(0.0)}
+
+        # Log batch contents for debugging
+        logger.debug(f"Batch keys: {batch.keys() if hasattr(batch, 'keys') else 'No keys'}")
+
         eval_model = model if not training_args.torch_compile else model._orig_mod
 
         if mixed_precision == "fp16":
@@ -1293,27 +1321,57 @@ def main():
                 # release training input batch
                 batch = release_memory(batch)
 
-                validation_dataloader = DataLoader(
-                    vectorized_datasets["eval"],
-                    collate_fn=data_collator,
-                    batch_size=per_device_eval_batch_size,
-                    drop_last=False,
-                    num_workers=training_args.eval_dataloader_num_workers,
-                    pin_memory=training_args.dataloader_pin_memory,
-                )
-                validation_dataloader = accelerator.prepare(validation_dataloader)
+                # Hardy: Check if this is a generation-only evaluation
+                has_audio_for_eval = target_audio_column_name in raw_datasets.get("eval",
+                                                                                  {}).column_names if "eval" in raw_datasets else False
 
-                for batch in tqdm(
-                    validation_dataloader,
-                    desc=f"Evaluating - Inference ...",
-                    position=2,
-                    disable=not accelerator.is_local_main_process,
-                ):
-                    # Model forward
-                    eval_metric = eval_step(batch, accelerator, autocast_kwargs)
-                    eval_metric = accelerator.gather_for_metrics(eval_metric)
-                    eval_metric = {key: val.unsqueeze(0) if val.ndim == 0 else val for (key,val) in eval_metric.items()}
-                    eval_metrics.append(eval_metric)
+                if has_audio_for_eval:
+                    # Hardy: This is the original one for loss evaluation, and now we tab it and put it under the if-has_audio_for_eval condition
+                    validation_dataloader = DataLoader(
+                        vectorized_datasets["eval"],
+                        collate_fn=data_collator,
+                        batch_size=per_device_eval_batch_size,
+                        drop_last=False,
+                        num_workers=training_args.eval_dataloader_num_workers,
+                        pin_memory=training_args.dataloader_pin_memory,
+                    )
+                    validation_dataloader = accelerator.prepare(validation_dataloader)
+
+                    # Hardy: Debug (this is a legacy debug):
+                    logger.info(f"DEBUG: Validation dataloader info:")
+                    logger.info(f"  - Number of batches: {len(validation_dataloader)}")
+                    logger.info(f"  - Batch size: {per_device_eval_batch_size}")
+                    logger.info(f"  - Total samples: {len(vectorized_datasets['eval'])}")
+                    # To inspect the first batch:
+                    for i, batch in enumerate(validation_dataloader):
+                        if i == 0:  # Only check first batch
+                            logger.info(f"DEBUG: First batch keys: {batch.keys()}")
+                            for key, value in batch.items():
+                                if isinstance(value, torch.Tensor):
+                                    logger.info(f"  - {key}: shape {value.shape}")
+                                else:
+                                    logger.info(
+                                        f"  - {key}: type {type(value)}, length {len(value) if hasattr(value, '__len__') else 'N/A'}")
+                        break
+                    # Hardy: up to here
+
+                    for batch in tqdm(
+                        validation_dataloader,
+                        desc=f"Evaluating - Inference ...",
+                        position=2,
+                        disable=not accelerator.is_local_main_process,
+                    ):
+                        # Model forward
+                        eval_metric = eval_step(batch, accelerator, autocast_kwargs)
+                        eval_metric = accelerator.gather_for_metrics(eval_metric)
+                        eval_metric = {key: val.unsqueeze(0) if val.ndim == 0 else val for (key,val) in eval_metric.items()}
+                        eval_metrics.append(eval_metric)
+                    # Hardy: to here
+                # Hardy: New logic
+                else:
+                    # Skip loss computation for generation-only evaluation
+                    logger.info("Skipping loss computation for generation-only evaluation dataset")
+                    eval_metrics = [{"loss": torch.tensor(0.0)}]  # Dummy metric
 
                 # Hardy: Discard the orginal:
                 # if training_args.predict_with_generate and (cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
