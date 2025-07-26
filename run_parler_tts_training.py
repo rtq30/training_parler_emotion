@@ -73,7 +73,8 @@ import numpy as np
 from eval import clap_similarity, wer, si_sdr, speech_emotion_recognition
 
 # Hardy: Add this flag to track if we've done the feasibility test
-feasibility_test_done = False
+# Hardy: Change its location inside main() due to the UnboundLocalError.
+# feasibility_test_done = False
 
 logger = logging.getLogger(__name__)
 
@@ -82,6 +83,9 @@ def main():
     # See all possible arguments in src/transformers/training_args.py
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
+
+    # Hardy: Change its location inside main() due to the UnboundLocalError.
+    feasibility_test_done = False
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, ParlerTTSTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
@@ -1322,8 +1326,14 @@ def main():
                 batch = release_memory(batch)
 
                 # Hardy: Check if this is a generation-only evaluation
-                has_audio_for_eval = target_audio_column_name in raw_datasets.get("eval",
-                                                                                  {}).column_names if "eval" in raw_datasets else False
+                # has_audio_for_eval = target_audio_column_name in raw_datasets.get("eval",
+                #                                                                   {}).column_names if "eval" in raw_datasets else False
+                has_audio_for_eval = False
+                if isinstance(vectorized_datasets, dict) and "eval" in vectorized_datasets:
+                    eval_split = vectorized_datasets["eval"]
+                    if hasattr(eval_split, "column_names"):
+                        has_audio_for_eval = target_audio_column_name in eval_split.column_names
+                logger.info(f"DEBUG: So the has_audio_for_eval is {has_audio_for_eval}")
 
                 if has_audio_for_eval:
                     # Hardy: This is the original one for loss evaluation, and now we tab it and put it under the if-has_audio_for_eval condition
@@ -1488,7 +1498,9 @@ def main():
                             json.dump(metadata, f, indent=2)
 
                     # Feasibility test: Run full evaluation after first generation step
-                    if not feasibility_test_done and not training_args.post_training_generation_eval:
+                    # Hardy: I updated the if-condition logic -- I hope that feasibility test will be always done
+                    if not feasibility_test_done:
+                    # if not feasibility_test_done and not training_args.post_training_generation_eval:
                         logger.info("*** Running feasibility test for evaluation models ***")
                         if accelerator.is_local_main_process:
                             try:
