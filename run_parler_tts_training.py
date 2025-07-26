@@ -170,7 +170,10 @@ def main():
         datefmt="%m/%d/%Y %H:%M:%S",
         handlers=[logging.StreamHandler(sys.stdout)],
     )
-    logger.setLevel(logging.INFO if accelerator.is_main_process else logging.WARN)
+    # Hardy: Important! Temporarily force all processes to log at INFO level
+    logger.setLevel(logging.INFO)
+    # Hardy: The original logger setup:
+    # logger.setLevel(logging.INFO if accelerator.is_main_process else logging.WARN)
 
     # Log a small summary on each proces
     logger.warning(
@@ -273,6 +276,8 @@ def main():
                 logger=logger,
                 # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
             )
+            # Hardy: I added a debug logging here:
+            logger.info(f"DEBUG: Train dataset size after loading: {len(raw_datasets['train'])}")
 
             for key in columns_to_keep:
                 if columns_to_keep[key] not in raw_datasets["train"].column_names:
@@ -284,6 +289,9 @@ def main():
 
             if data_args.max_train_samples is not None:
                 raw_datasets["train"] = raw_datasets["train"].select(range(data_args.max_train_samples))
+            # Hardy: I added a debug logging here:
+            logger.info(f"DEBUG: Train dataset size after sampling: {len(raw_datasets['train'])}")
+
         # Hardy: I took some modification here:
         # The original one:
         # if training_args.do_eval:
@@ -464,6 +472,12 @@ def main():
             # Handle different datasets separately since they may have different columns
             vectorized_datasets = {}
             for split_name, dataset in raw_datasets.items():
+                # Hardy: I added some debug logging here:
+                logger.info(f"DEBUG: {split_name} dataset info:")
+                logger.info(f"DEBUG:   - Size: {len(dataset)}")
+                logger.info(f"DEBUG:   - Columns: {dataset.column_names}")
+                logger.info(
+                    f"DEBUG:   - First example keys: {list(dataset[0].keys()) if len(dataset) > 0 else 'Empty dataset'}")
                 vectorized_datasets[split_name] = dataset.map(
                     pass_through_processors,
                     remove_columns=dataset.column_names,  # Remove columns specific to this dataset
@@ -560,6 +574,9 @@ def main():
         for split in vectorized_datasets:
             # Check if this split has audio data
             if target_audio_column_name in raw_datasets[split].column_names:
+                # Hardy: I added a debug logging here:
+                logger.info(f"DEBUG: Columns in {split} split: {raw_datasets[split].column_names}")
+
                 logger.info(f"Encoding audio for {split} split...")
 
                 data_loader = DataLoader(
