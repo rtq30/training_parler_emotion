@@ -1381,7 +1381,10 @@ def main():
                 else:
                     # Skip loss computation for generation-only evaluation
                     logger.info("Skipping loss computation for generation-only evaluation dataset")
-                    eval_metrics = [{"loss": torch.tensor(0.0)}]  # Dummy metric
+                    # Hardy: Due to the reducer matching issue, I replaced the following line with a line building 1-dimension one.
+                    # eval_metrics = [{"loss": torch.tensor(0.0)}]  # Dummy metric
+                    device = getattr(accelerator, "device", None)
+                    val_metrics = [{"loss": torch.tensor(0.0, device=device).unsqueeze(0)}]  # shape [1]
 
                 # Hardy: Discard the orginal:
                 # if training_args.predict_with_generate and (cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
