@@ -145,8 +145,7 @@ def wer(
     asr_pipeline.model.to("cpu")
     asr_pipeline = release_memory(asr_pipeline)
     return word_error, [t["text"] for t in transcriptions], clean_word_error, noisy_word_error, percent_clean_samples
-
-# Hardy: I build a new eval function of SER here
+    
 def speech_emotion_recognition(
         ser_model_name_or_path,
         audios,
@@ -157,17 +156,17 @@ def speech_emotion_recognition(
         max_duration=30.0,
 ):
     """
-    Compute emotion recognition accuracy using a pre-trained SER model.
+    Compute emotion recognition accuracy using a pre-trained SER model with detailed logging.
     """
     # Emotion mapping from your labels to SER model labels
     EMOTION_MAPPING = {
-        "Happy": "Happy",
-        "Confused": "Surprised",  # Map confused to surprised as closest match
-        "Neutral": "Neutral",
-        "Laughing": "Happy",  # Map laughing to happy
-        "Sad": "Sad",
-        "Whisper": "Neutral",  # Map whisper to neutral (no direct match)
-        "Emphasis": "Neutral",  # Map emphasis to neutral (no direct match)
+        "Happy": "happy",
+        "Confused": "surprised",
+        "Neutral": "neutral",
+        "Laughing": "happy",
+        "Sad": "sad",
+        "Whisper": "neutral",
+        "Emphasis": "neutral",
     }
 
     # Track which emotions don't have direct mappings
@@ -183,6 +182,17 @@ def speech_emotion_recognition(
     max_length = int(output_sampling_rate * max_duration)
     id2label = model.config.id2label
     label2id = {v: k for k, v in id2label.items()}
+
+    # Log model information
+    print("\n" + "=" * 60)
+    print("SER MODEL INFORMATION")
+    print("=" * 60)
+    print(f"Model: {ser_model_name_or_path}")
+    print(f"Available emotions in model: {list(label2id.keys())}")
+    print(f"Number of evaluation samples: {len(emotion_labels)}")
+    print(f"Unique emotions in dataset: {set(emotion_labels)}")
+    print(f"Emotion mapping being used: {EMOTION_MAPPING}")
+    print("=" * 60 + "\n")
 
     predictions = []
     probabilities = []
@@ -203,7 +213,6 @@ def speech_emotion_recognition(
         # Prepare batch inputs
         batch_inputs = []
         for audio in batch_audios:
-            # Pad or truncate audio
             if len(audio) > max_length:
                 audio = audio[:max_length]
             else:
@@ -224,7 +233,6 @@ def speech_emotion_recognition(
             logits = outputs.logits
             probs = torch.softmax(logits, dim=-1)
 
-            # Get predicted labels
             predicted_ids = torch.argmax(logits, dim=-1)
             batch_predictions = [id2label[pred_id.item()] for pred_id in predicted_ids]
             batch_probabilities = probs.cpu().numpy()
@@ -236,6 +244,14 @@ def speech_emotion_recognition(
     model.to("cpu")
     model = release_memory(model)
 
+    # Detailed logging of all predictions
+    print("\n" + "=" * 60)
+    print("DETAILED PREDICTION RESULTS")
+    print("=" * 60)
+    print(
+        f"{'Sample':>6} | {'True Label':>10} | {'Expected':>10} | {'Predicted':>10} | {'Match':>5} | Top 3 Predictions")
+    print("-" * 100)
+
     # Compute metrics
     correct = 0
     mapped_correct = 0
@@ -244,7 +260,10 @@ def speech_emotion_recognition(
     emotion_specific_scores = []
     unmapped_emotion_results = {}
 
-    for pred, true_label, prob_dist in zip(predictions, emotion_labels, probabilities):
+    # Create a detailed results list for saving/analysis
+    detailed_results = []
+
+    for idx, (pred, true_label, prob_dist) in enumerate(zip(predictions, emotion_labels, probabilities)):
         # Track per-emotion totals
         if true_label not in per_emotion_total:
             per_emotion_total[true_label] = 0
@@ -252,12 +271,34 @@ def speech_emotion_recognition(
         per_emotion_total[true_label] += 1
 
         # Get mapped emotion for evaluation
-        mapped_emotion = EMOTION_MAPPING.get(true_label, "Neutral")
+        mapped_emotion = EMOTION_MAPPING.get(true_label, "neutral")
 
         # Check if prediction matches mapped emotion
-        if pred == mapped_emotion:
+        match = pred == mapped_emotion
+        if match:
             mapped_correct += 1
             per_emotion_correct[true_label] += 1
+
+        # Get top 3 predictions with probabilities
+        top_3_indices = np.argsort(prob_dist)[-3:][::-1]
+        top_3_preds = [(id2label[i], prob_dist[i]) for i in top_3_indices]
+        top_3_str = " | ".join([f"{label}:{prob:.2%}" for label, prob in top_3_preds])
+
+        # Print detailed result for this sample
+        match_symbol = "✓" if match else "✗"
+        print(f"{idx:>6} | {true_label:>10} | {mapped_emotion:>10} | {pred:>10} | {match_symbol:>5} | {top_3_str}")
+
+        # Store detailed result
+        detailed_results.append({
+            "sample_idx": idx,
+            "true_label": true_label,
+            "expected_prediction": mapped_emotion,
+            "actual_prediction": pred,
+            "match": match,
+            "confidence": float(np.max(prob_dist)),
+            "top_3_predictions": {label: float(prob) for label, prob in top_3_preds},
+            "all_probabilities": {id2label[i]: float(prob_dist[i]) for i in range(len(prob_dist))}
+        })
 
         # For unmapped emotions, track the distribution
         if true_label in UNMAPPED_EMOTIONS:
@@ -277,7 +318,7 @@ def speech_emotion_recognition(
         else:
             emotion_specific_scores.append(0.0)
 
-    # Calculate overall accuracy using mapped emotions
+    # Calculate overall accuracy
     accuracy = mapped_correct / len(emotion_labels) if len(emotion_labels) > 0 else 0.0
 
     # Calculate per-emotion accuracy
@@ -288,7 +329,7 @@ def speech_emotion_recognition(
         else:
             per_emotion_accuracy[emotion] = 0.0
 
-    # Calculate average emotion-specific score (probability of correct mapped emotion)
+    # Calculate average emotion-specific score
     avg_emotion_score = np.mean(emotion_specific_scores) if emotion_specific_scores else 0.0
 
     # Prepare detailed results for unmapped emotions
@@ -298,11 +339,10 @@ def speech_emotion_recognition(
         for pred in results["predictions"]:
             pred_counts[pred] = pred_counts.get(pred, 0) + 1
 
-        # Get average probabilities for each predicted class
         avg_probs = np.mean(results["probabilities"], axis=0)
         top_predictions = []
         for i, prob in enumerate(avg_probs):
-            if prob > 0.1:  # Only show predictions with >10% probability
+            if prob > 0.1:
                 top_predictions.append({
                     "emotion": id2label[i],
                     "avg_probability": float(prob)
@@ -314,12 +354,73 @@ def speech_emotion_recognition(
             "top_predictions": sorted(top_predictions, key=lambda x: x["avg_probability"], reverse=True)
         }
 
+    # Summary statistics
+    print("\n" + "=" * 60)
+    print("SUMMARY STATISTICS")
+    print("=" * 60)
+    print(f"Overall Accuracy: {accuracy:.2%} ({mapped_correct}/{len(emotion_labels)})")
+    print(f"Average Confidence Score: {avg_emotion_score:.2%}")
+    print("\nPer-Emotion Accuracy:")
+    for emotion in sorted(per_emotion_total.keys()):
+        acc = per_emotion_accuracy[emotion]
+        correct = per_emotion_correct[emotion]
+        total = per_emotion_total[emotion]
+        print(f"  {emotion:>10}: {acc:>6.2%} ({correct}/{total})")
+
+    # Confusion matrix style summary
+    print("\n" + "=" * 60)
+    print("PREDICTION DISTRIBUTION PER TRUE EMOTION")
+    print("=" * 60)
+    for true_emotion in sorted(per_emotion_total.keys()):
+        # Count predictions for this true emotion
+        pred_distribution = {}
+        for idx, (true_label, pred) in enumerate(zip(emotion_labels, predictions)):
+            if true_label == true_emotion:
+                pred_distribution[pred] = pred_distribution.get(pred, 0) + 1
+
+        print(f"\n{true_emotion}:")
+        for pred_emotion, count in sorted(pred_distribution.items(), key=lambda x: x[1], reverse=True):
+            percentage = count / per_emotion_total[true_emotion] * 100
+            print(f"  → {pred_emotion}: {count} ({percentage:.1f}%)")
+
+    print("=" * 60 + "\n")
+
+    # Save detailed results to a JSON file for further analysis
+    import json
+    import os
+    import time
+    results_dir = "ser_evaluation_results"
+    os.makedirs(results_dir, exist_ok=True)
+
+    timestamp = time.strftime("%Y%m%d_%H%M%S")
+    results_file = os.path.join(results_dir, f"ser_detailed_results_{timestamp}.json")
+
+    with open(results_file, "w") as f:
+        json.dump({
+            "summary": {
+                "total_samples": len(emotion_labels),
+                "overall_accuracy": accuracy * 100,
+                "avg_emotion_score": avg_emotion_score * 100,
+                "per_emotion_accuracy": {k: v * 100 for k, v in per_emotion_accuracy.items()},
+                "per_emotion_counts": per_emotion_total,
+            },
+            "detailed_results": detailed_results,
+            "emotion_mapping": EMOTION_MAPPING,
+            "model_info": {
+                "model_name": ser_model_name_or_path,
+                "available_emotions": list(label2id.keys()),
+            }
+        }, f, indent=2)
+
+    print(f"Detailed results saved to: {results_file}")
+
     return {
-        "ser_accuracy": accuracy * 100,  # Convert to percentage
-        "ser_avg_emotion_score": avg_emotion_score * 100,  # Convert to percentage
+        "ser_accuracy": accuracy * 100,
+        "ser_avg_emotion_score": avg_emotion_score * 100,
         "ser_per_emotion_accuracy": per_emotion_accuracy,
         "ser_predictions": predictions,
         "ser_probabilities": probabilities,
         "ser_emotion_mapping": EMOTION_MAPPING,
         "ser_unmapped_emotion_stats": unmapped_stats,
+        "ser_detailed_results": detailed_results,  # Add this for logging
     }
