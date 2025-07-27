@@ -67,14 +67,9 @@ from arguments import ModelArguments, DataTrainingArguments, ParlerTTSTrainingAr
 from data import load_multiple_datasets, DataCollatorParlerTTSWithPadding, DataCollatorEncodecWithPadding
 from eval import clap_similarity, wer, si_sdr
 
-# Hardy: I added some new imports here
 import json
 import numpy as np
 from eval import clap_similarity, wer, si_sdr, speech_emotion_recognition
-
-# Hardy: Add this flag to track if we've done the feasibility test
-# Hardy: Change its location inside main() due to the UnboundLocalError.
-# feasibility_test_done = False
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +79,6 @@ def main():
     # or by passing the --help flag to this script.
     # We now keep distinct sets of args, for a cleaner separation of concerns.
 
-    # Hardy: Change its location inside main() due to the UnboundLocalError.
     feasibility_test_done = False
 
     parser = HfArgumentParser((ModelArguments, DataTrainingArguments, ParlerTTSTrainingArguments))
@@ -257,7 +251,6 @@ def main():
         }
         if data_args.description_column_name is not None:
             columns_to_keep["description_column_name"] = data_args.description_column_name
-        # Hardy: Add a new if condition for the emotion column
         if data_args.emotion_column_name is not None:
             columns_to_keep["emotion_column_name"] = data_args.emotion_column_name
 
@@ -280,7 +273,6 @@ def main():
                 logger=logger,
                 # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
             )
-            # Hardy: I added a debug logging here:
             logger.info(f"DEBUG: Train dataset size after loading: {len(raw_datasets['train'])}")
 
             for key in columns_to_keep:
@@ -293,32 +285,8 @@ def main():
 
             if data_args.max_train_samples is not None:
                 raw_datasets["train"] = raw_datasets["train"].select(range(data_args.max_train_samples))
-            # Hardy: I added a debug logging here:
             logger.info(f"DEBUG: Train dataset size after sampling: {len(raw_datasets['train'])}")
 
-        # Hardy: I took some modification here:
-        # The original one:
-        # if training_args.do_eval:
-        #     raw_datasets["eval"] = load_multiple_datasets(
-        #         accelerator,
-        #         data_args.eval_dataset_name if data_args.eval_dataset_name else data_args.train_dataset_name,
-        #         data_args.eval_dataset_config_name
-        #         if data_args.eval_dataset_config_name
-        #         else data_args.train_dataset_config_name,
-        #         metadata_dataset_names=data_args.eval_metadata_dataset_name,
-        #         splits=data_args.eval_split_name,
-        #         cache_dir=model_args.cache_dir,
-        #         num_proc=data_args.preprocessing_num_workers,
-        #         id_column_name=data_args.id_column_name,
-        #         columns_to_keep=columns_to_keep.values(),
-        #         prompt_column_name=data_args.prompt_column_name,
-        #         audio_column_name=data_args.target_audio_column_name,
-        #         sampling_rate=sampling_rate,
-        #         logger=logger,
-        #         # streaming=data_args.streaming, TODO(SG): optionally enable streaming mode
-        #     )
-        # The current one:
-        # Replace the evaluation dataset loading section with:
         if training_args.do_eval:
             # Check if eval dataset is a local pre-saved dataset
             if os.path.exists(data_args.eval_dataset_name) and os.path.isdir(data_args.eval_dataset_name):
@@ -364,7 +332,6 @@ def main():
                     raw_datasets["eval"] = (
                         raw_datasets["eval"].shuffle(seed=training_args.seed).select(range(data_args.max_eval_samples))
                     )
-            # Hardy: I added a debug logging from here:
             logger.info(f"DEBUG: Eval dataset info:")
             logger.info(f"  - Type: {type(raw_datasets['eval'])}")
             logger.info(f"  - Length: {len(raw_datasets['eval'])}")
@@ -372,7 +339,6 @@ def main():
                 f"  - Columns: {raw_datasets['eval'].column_names if hasattr(raw_datasets['eval'], 'column_names') else 'No column_names attribute'}")
             if len(raw_datasets['eval']) > 0:
                 logger.info(f"  - First example keys: {list(raw_datasets['eval'][0].keys())}")
-            # Hardy: to here
 
     # 3. Next, let's load the config.
     config = ParlerTTSConfig.from_pretrained(
@@ -461,15 +427,7 @@ def main():
 
         # Preprocessing the dataset.
         # We need to tokenize the texts.
-        # Hardy: I modified this:
-        # def pass_through_processors(description, prompt):
-        #     batch = {}
-        #
-        #     batch["input_ids"] = description_tokenizer(description.strip())["input_ids"]
-        #     batch["prompt_input_ids"] = prompt_tokenizer(prompt.strip())["input_ids"]
-        #
-        #     return batch
-        # Hardy: To this:
+
         def pass_through_processors(examples):
             """Process text fields and preserve metadata"""
             batch = {}
@@ -487,17 +445,6 @@ def main():
 
             return batch
 
-        # Hardy: I changed this --
-        # with accelerator.local_main_process_first():
-        #     # this is a trick to avoid to rewrite the entire audio column which takes ages
-        #     vectorized_datasets = raw_datasets.map(
-        #         pass_through_processors,
-        #         remove_columns=next(iter(raw_datasets.values())).column_names,
-        #         input_columns=[description_column_name, prompt_column_name],
-        #         num_proc=num_workers,
-        #         desc="preprocess datasets",
-        #     )
-        # Hardy: To this (updated again):
         with accelerator.local_main_process_first():
             # Process each dataset split separately
             vectorized_datasets = {}
@@ -534,13 +481,11 @@ def main():
 
             # Convert back to DatasetDict
             vectorized_datasets = DatasetDict(vectorized_datasets)
-        # Hardy: up to here
 
         # We use Accelerate to perform distributed inference
         # T5 doesn't support fp16
         autocast_kwargs = AutocastKwargs(enabled=(mixed_precision != "fp16"))
 
-        # Hardy: The following is the modified Section B of Encode audio
         # Now we encode the audio labels with encodec.
         ####### B. Encode audio
 
@@ -620,9 +565,7 @@ def main():
         for split in vectorized_datasets:
             # Check if this split has audio data
             if target_audio_column_name in raw_datasets[split].column_names:
-                # Hardy: I added a debug logging here:
                 logger.info(f"DEBUG: Columns in {split} split: {raw_datasets[split].column_names}")
-
                 logger.info(f"Encoding audio for {split} split...")
 
                 data_loader = DataLoader(
@@ -734,7 +677,6 @@ def main():
         if 'generate_labels' in locals():
             del generate_labels
             del all_lens
-            # Hardy: The modified section B is to here.
 
         with accelerator.local_main_process_first():
             # NOTE: filtering is done at the end because in the `datasets` library, caching audio files is done after most operations
@@ -833,52 +775,6 @@ def main():
         return
 
     # 6. Next, we can prepare the training.
-    # Hardy: Discard the original function of compute_metrics
-
-    # # Let's use word CLAP similary and WER metrics as our evaluation metrics,
-    # def compute_metrics(
-    #     audios,
-    #     descriptions,
-    #     prompts,
-    #     device="cpu",
-    #     compute_clap_similarity_metric=False,
-    #     compute_noise_level_metric=False,
-    #     noise_level_to_compute_clean_wer=None,
-    # ):
-    #     results = {}
-    #     input_ids = descriptions
-    #     texts = description_tokenizer.batch_decode(input_ids, skip_special_tokens=True)
-    #     prompts = prompt_tokenizer.batch_decode(prompts, skip_special_tokens=True)
-    #     audios = [a.float().cpu().numpy() for a in audios]
-    #
-    #     if compute_clap_similarity_metric:
-    #         clap_score = clap_similarity(
-    #             model_args.clap_model_name_or_path, texts, audios, device, input_sampling_rate=sampling_rate
-    #         )
-    #         results["clap"] = clap_score
-    #
-    #     si_sdr_measures = None
-    #     if compute_noise_level_metric:
-    #         si_sdr_measures = si_sdr(audios, device, input_sampling_rate=sampling_rate)
-    #
-    #     word_error, transcriptions, clean_word_error, noisy_word_error, percent_clean_samples = wer(
-    #         model_args.asr_model_name_or_path,
-    #         prompts,
-    #         audios,
-    #         device,
-    #         training_args.per_device_eval_batch_size,
-    #         sampling_rate,
-    #         noise_level_to_compute_clean_wer,
-    #         si_sdr_measures,
-    #     )
-    #     results["wer"] = word_error
-    #     if clean_word_error is not None:
-    #         results["clean_wer"] = clean_word_error
-    #         results["noisy_word_error"] = noisy_word_error
-    #         results["percent_clean_samples"] = percent_clean_samples
-    #
-    #     return results, texts, prompts, audios, transcriptions, si_sdr_measures
-    # Hardy: The following is the new compute_metrics including ser, clap, and wer
     def compute_metrics(
             audios,
             descriptions,
@@ -1219,15 +1115,27 @@ def main():
         return metrics
 
     def generate_step(batch, accelerator):
+        # Remove fields that generate() doesn't accept
         batch.pop("decoder_attention_mask", None)
+
+        # Create a clean batch with only the fields needed for generation
+        generation_batch = {
+            "input_ids": batch["input_ids"],
+            "attention_mask": batch.get("attention_mask"),
+            "prompt_input_ids": batch["prompt_input_ids"],
+            "prompt_attention_mask": batch.get("prompt_attention_mask"),
+        }
+
+        # Remove None values
+        generation_batch = {k: v for k, v in generation_batch.items() if v is not None}
+
         eval_model = accelerator.unwrap_model(model, keep_fp32_wrapper=True)
         if training_args.torch_compile:
             # if the model is compiled, we use the original model bc compile is not compatible with .generate
             eval_model = model._orig_mod
 
-        # since we've might have loaded the weights in fp32, we have to autocast to ensure FA2 weights are in half-precision.
-        # with accelerator.autocast(autocast_handler=AutocastKwargs(enabled=(attn_implementation=="flash_attention_2"))):
-        output_audios = eval_model.generate(**batch, **gen_kwargs)
+        # Generate with only the expected fields
+        output_audios = eval_model.generate(**generation_batch, **gen_kwargs)
         output_audios = accelerator.pad_across_processes(output_audios, dim=1, pad_index=0)
         return output_audios
 
@@ -1345,6 +1253,9 @@ def main():
                         )
                 accelerator.wait_for_everyone()
 
+            # Initialize eval_metric to None to avoid UnboundLocalError when releasing memory
+            eval_metric = None
+
             if training_args.do_eval and (cur_step % eval_steps == 0 or cur_step == total_train_steps):
                 train_time += time.time() - train_start
                 # ======================== Evaluating ==============================
@@ -1358,9 +1269,6 @@ def main():
                 # release training input batch
                 batch = release_memory(batch)
 
-                # Hardy: Check if this is a generation-only evaluation
-                # has_audio_for_eval = target_audio_column_name in raw_datasets.get("eval",
-                #                                                                   {}).column_names if "eval" in raw_datasets else False
                 has_audio_for_eval = False
                 if isinstance(vectorized_datasets, dict) and "eval" in vectorized_datasets:
                     eval_split = vectorized_datasets["eval"]
@@ -1369,7 +1277,6 @@ def main():
                 logger.info(f"DEBUG: So the has_audio_for_eval is {has_audio_for_eval}")
 
                 if has_audio_for_eval:
-                    # Hardy: This is the original one for loss evaluation, and now we tab it and put it under the if-has_audio_for_eval condition
                     validation_dataloader = DataLoader(
                         vectorized_datasets["eval"],
                         collate_fn=data_collator,
@@ -1380,7 +1287,6 @@ def main():
                     )
                     validation_dataloader = accelerator.prepare(validation_dataloader)
 
-                    # Hardy: Debug (this is a legacy debug):
                     logger.info(f"DEBUG: Validation dataloader info:")
                     logger.info(f"  - Number of batches: {len(validation_dataloader)}")
                     logger.info(f"  - Batch size: {per_device_eval_batch_size}")
@@ -1396,7 +1302,6 @@ def main():
                                     logger.info(
                                         f"  - {key}: type {type(value)}, length {len(value) if hasattr(value, '__len__') else 'N/A'}")
                         break
-                    # Hardy: up to here
 
                     for batch in tqdm(
                         validation_dataloader,
@@ -1409,47 +1314,15 @@ def main():
                         eval_metric = accelerator.gather_for_metrics(eval_metric)
                         eval_metric = {key: val.unsqueeze(0) if val.ndim == 0 else val for (key,val) in eval_metric.items()}
                         eval_metrics.append(eval_metric)
-                    # Hardy: to here
-                # Hardy: New logic
+                # New logic
                 else:
                     # Skip loss computation for generation-only evaluation
                     logger.info("Skipping loss computation for generation-only evaluation dataset")
-                    # Hardy: Due to the reducer matching issue, I replaced the following line with a line building 1-dimension one.
+                    # Due to the reducer matching issue, replace the following line with a line building 1-dimension one.
                     # eval_metrics = [{"loss": torch.tensor(0.0)}]  # Dummy metric
                     device = getattr(accelerator, "device", None)
                     eval_metrics = [{"loss": torch.tensor(0.0, device=device).unsqueeze(0)}]  # shape [1]
 
-                # Hardy: Discard the orginal:
-                # if training_args.predict_with_generate and (cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
-                #     validation_dataloader = DataLoader(
-                #         vectorized_datasets["eval"],
-                #         collate_fn=data_collator,
-                #         batch_size=per_device_eval_batch_size,
-                #         drop_last=False,
-                #         num_workers=training_args.eval_dataloader_num_workers,
-                #         pin_memory=training_args.dataloader_pin_memory,
-                #     )
-                #     validation_dataloader = accelerator.prepare(validation_dataloader)
-                #     # generation
-                #     for batch in tqdm(
-                #         validation_dataloader,
-                #         desc=f"Evaluating - Generation ...",
-                #         position=2,
-                #         disable=not accelerator.is_local_main_process,
-                #     ):
-                #         generated_audios = generate_step(batch, accelerator)
-                #         # Gather all predictions and targets
-                #         generated_audios, input_ids, prompts = accelerator.pad_across_processes(
-                #             (generated_audios, batch["input_ids"], batch["prompt_input_ids"]), dim=1, pad_index=0
-                #         )
-                #         generated_audios, input_ids, prompts = accelerator.gather_for_metrics(
-                #             (generated_audios, input_ids, prompts)
-                #         )
-                #         eval_preds.extend(generated_audios.to("cpu"))
-                #         eval_descriptions.extend(input_ids.to("cpu"))
-                #         eval_prompts.extend(prompts.to("cpu"))
-
-                # Hardy: The following is the new one:
                 if training_args.predict_with_generate and (
                         cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
                     validation_dataloader = DataLoader(
@@ -1489,9 +1362,6 @@ def main():
 
                         # Gather all metadata if present
                         batch_metadata = {}
-                        # Hardy: I cried.
-                        # metadata_fields = ["emotion", "gender", "background_noise", "pitch", "rate", "test_category",
-                        #                    "number"]
                         metadata_fields = ["style", "gender", "noise", "pitch", "speaking_rate", "test_category",
                                            "number"]
                         for field in metadata_fields:
@@ -1502,9 +1372,6 @@ def main():
                             eval_metadata.extend([batch_metadata] * len(generated_audios))
 
                         # Extract emotion labels specifically
-                        # Hardy: I cried:
-                        # if "emotion" in batch:
-                        #     eval_emotion_labels.extend(batch["emotion"])
                         if "style" in batch:
                             eval_emotion_labels.extend(batch["style"])
 
@@ -1534,12 +1401,11 @@ def main():
                             json.dump(metadata, f, indent=2)
 
                     # Feasibility test: Run full evaluation after first generation step
-                    # Hardy: I updated the if-condition logic -- I hope that feasibility test will be always done
+                    # Updated the if-condition logic -- I hope that feasibility test will be always done
                     if not feasibility_test_done:
                     # if not feasibility_test_done and not training_args.post_training_generation_eval:
                         logger.info("*** Running feasibility test for evaluation models ***")
 
-                        # Hardy: I added a debug logging here
                         # This verifies emotion labels were collected during generation
                         if accelerator.is_main_process:
                             logger.info(f"DEBUG: Collected {len(eval_emotion_labels)} emotion labels for SER evaluation")
@@ -1604,6 +1470,9 @@ def main():
                                     if test_ser.get('ser_unmapped_emotion_stats'):
                                         logger.info(f"Unmapped emotion stats: {test_ser['ser_unmapped_emotion_stats']}")
 
+                                    logger.info(f"SER_per_emotion_accuracy: {test_ser['ser_per_emotion_accuracy']}")
+                                    logger.info(f"SER detailed results: {test_ser['ser_detailed_results']}")
+
                                 feasibility_test_done = True
                                 logger.info("*** Feasibility test completed successfully! ***")
 
@@ -1666,39 +1535,6 @@ def main():
 
                 # compute metrics
                 metrics_desc = ""
-                if training_args.predict_with_generate and (cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
-                    if accelerator.is_local_main_process:
-                        (
-                            metric_values,
-                            pred_descriptions,
-                            pred_prompts,
-                            audios,
-                            transcriptions,
-                            si_sdr_measures,
-                        ) = compute_metrics(
-                            eval_preds,
-                            eval_descriptions,
-                            eval_prompts,
-                            accelerator.device,
-                            training_args.compute_clap_similarity_metric,
-                            training_args.compute_noise_level_metric,
-                            training_args.noise_level_to_compute_clean_wer,
-                        )
-                        eval_metrics.update(metric_values)
-                        metrics_desc = " ".join([f"Eval {key}: {value} |" for key, value in metric_values.items()])
-                        if "wandb" in training_args.report_to:
-                            log_pred(
-                                accelerator,
-                                pred_descriptions,
-                                pred_prompts,
-                                transcriptions,
-                                audios,
-                                si_sdr_measures,
-                                sampling_rate=sampling_rate,
-                                step=cur_step,
-                                prefix="eval",
-                            )
-                    accelerator.wait_for_everyone()
 
                 # Print metrics and update progress bar
                 if accelerator.is_local_main_process:
@@ -1739,7 +1575,6 @@ def main():
 
     accelerator.end_training()
 
-    # Hardy: Here I added a hugh section for the post-training evaluation.
     # Post-training evaluation
     if training_args.do_eval and training_args.post_training_generation_eval and data_args.generated_audio_save_dir:
         logger.info("*** Running post-training generation evaluation ***")
