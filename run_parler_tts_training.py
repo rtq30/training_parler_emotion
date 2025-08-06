@@ -425,23 +425,41 @@ def main():
                     input_columns=[description_column_name],
                 )
 
-        # Preprocessing the dataset.
-        # We need to tokenize the texts.
-
         def pass_through_processors(examples):
-            """Process text fields and preserve metadata"""
+            """Process text fields and preserve metadata - handles batched input"""
             batch = {}
 
-            # Process text fields
-            batch["input_ids"] = description_tokenizer(examples[description_column_name].strip())["input_ids"]
-            batch["prompt_input_ids"] = prompt_tokenizer(examples[prompt_column_name].strip())["input_ids"]
+            # Check if we're dealing with a batch or single example
+            is_batched = isinstance(examples[description_column_name], list)
 
-            # Preserve metadata fields that exist in the dataset
-            metadata_fields_to_preserve = ["style", "gender", "noise", "pitch", "speaking_rate", "test_category",
-                                           "number"]
-            for field in metadata_fields_to_preserve:
-                if field in examples:
-                    batch[field] = examples[field]
+            if is_batched:
+                # Process all descriptions at once - more efficient
+                descriptions = [desc.strip() for desc in examples[description_column_name]]
+                prompts = [prompt.strip() for prompt in examples[prompt_column_name]]
+
+                # Tokenize in batch - this is much faster
+                batch["input_ids"] = [description_tokenizer(desc)["input_ids"] for desc in descriptions]
+                batch["prompt_input_ids"] = [prompt_tokenizer(prompt)["input_ids"] for prompt in prompts]
+
+                # Preserve metadata fields for batch
+                metadata_fields_to_preserve = ["style", "gender", "noise", "pitch", "speaking_rate", "test_category",
+                                               "number"]
+                for field in metadata_fields_to_preserve:
+                    if field in examples:
+                        batch[field] = examples[field]  # Already a list
+                logger.info("We completed batch-optimized successfully!")
+            else:
+                # Single example processing (fallback)
+                batch["input_ids"] = description_tokenizer(examples[description_column_name].strip())["input_ids"]
+                batch["prompt_input_ids"] = prompt_tokenizer(examples[prompt_column_name].strip())["input_ids"]
+
+                # Preserve metadata fields
+                metadata_fields_to_preserve = ["style", "gender", "noise", "pitch", "speaking_rate", "test_category",
+                                               "number"]
+                for field in metadata_fields_to_preserve:
+                    if field in examples:
+                        batch[field] = examples[field]
+                logger.info("We didn't do batch-optimized successfully, just fall back.")
 
             return batch
 
@@ -464,13 +482,13 @@ def main():
                                    "pitch", "speaking_rate", "test_category", "number"}
                 columns_to_remove = [col for col in dataset.column_names if col not in columns_to_keep]
 
-                # Map the preprocessing function
                 vectorized_datasets[split_name] = dataset.map(
                     pass_through_processors,
                     remove_columns=columns_to_remove,
                     num_proc=num_workers,
                     desc=f"preprocess {split_name} dataset",
-                    batched=False,  # Process one example at a time
+                    batched=True,  # Enable batched processing
+                    batch_size=1000,  # Process 1000 examples at a time
                 )
 
                 # Verify the style column was preserved
@@ -1325,6 +1343,7 @@ def main():
 
                 if training_args.predict_with_generate and (
                         cur_step % eval_generation_steps == 0 or cur_step == total_train_steps):
+                    logger.info("It's time to do inference and then generation-based evaluation!")
                     validation_dataloader = DataLoader(
                         vectorized_datasets["eval"],
                         collate_fn=data_collator,
