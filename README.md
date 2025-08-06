@@ -9,8 +9,8 @@ However, this project is still in progress, where some bugs has not been fixed.
 #SBATCH --partition=gpu
 #SBATCH --qos=gpu
 #SBATCH --account=tc068-pool4
-#SBATCH --job-name=emotion_finetune_tianqi
-#SBATCH --time=18:00:00
+#SBATCH --job-name=first_running_with_e2v_emo_finetune_eval_with_same_sent_tianqi30
+#SBATCH --time=24:00:00
 #SBATCH --nodes=1
 #SBATCH --gres=gpu:1
 
@@ -19,10 +19,12 @@ source /work/tc068/tc068/tianqi30/myvenvs/parler/bin/activate
 
 export HF_HOME=/work/tc068/tc068/tianqi30/.cache/huggingface
 export TORCH_HOME=/work/tc068/tc068/tianqi30/.cache/torch
+export MODELSCOPE_CACHE=/work/tc068/tc068/tianqi30/.cache/modelscope
 
 # Offline mode settings
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
+export MODELSCOPE_OFFLINE_MODE=1
 
 # Wandb offline mode
 export WANDB_MODE=offline
@@ -33,11 +35,18 @@ export WANDB_RUN_NAME=emotion-finetune-$(date +%Y%m%d_%H%M%S)
 
 cd /work/tc068/tc068/tianqi30/parler-tts/
 
-# Create output directories
-mkdir -p ./ft_with_monitor/generated_audios_emotion
-mkdir -p ./ft_with_monitor/output_emotion_training
+JOB_TAG="speed_test_formal"
+STAMP="$(date +%Y%m%d_%H%M)"
+RUN_ID="${JOB_TAG}_${STAMP}"
+ROOT="task_and_stuff/${RUN_ID}"
 
-accelerate launch ./training_eval_emotion/run_parler_tts_training.py \
+# Create output directories
+mkdir -p "${ROOT}/generated_audios_emotion"
+mkdir -p "${ROOT}/output_emotion_training"
+mkdir -p "${ROOT}/audio_code_tmp"
+mkdir -p "${ROOT}/tmp_dataset_audio"
+
+accelerate launch ./training_parler_emotion/run_parler_tts_training.py \
     --model_name_or_path "parler-tts/parler_tts_mini_v0.1" \
     --feature_extractor_name "parler-tts/dac_44khZ_8kbps" \
     --description_tokenizer_name "parler-tts/parler_tts_mini_v0.1" \
@@ -48,7 +57,7 @@ accelerate launch ./training_eval_emotion/run_parler_tts_training.py \
     --train_metadata_dataset_name "reach-vb/expresso-tagged-w-speech-mistral-v3+ylacombe/jenny-tts-10k-tagged+parler-tts/libritts_r_tags_tagged_10k_generated+parler-tts/libritts_r_tags_tagged_10k_generated" \
     --train_dataset_config_name "read+default+clean+other" \
     --train_split_name "train+train[:20%]+test.clean+test.other" \
-    --eval_dataset_name "./ft_with_monitor/ParlerEmotionTest" \
+    --eval_dataset_name "./task_and_stuff/ParlerEmotionTest2" \
     --eval_split_name "eval" \
     --eval_dataset_config_name "default" \
     --eval_metadata_dataset_name "None" \
@@ -63,7 +72,7 @@ accelerate launch ./training_eval_emotion/run_parler_tts_training.py \
     --max_text_length 400 \
     --preprocessing_num_workers 2 \
     --do_train true \
-    --num_train_epochs 8 \
+    --num_train_epochs 12 \
     --gradient_accumulation_steps 64 \
     --gradient_checkpointing true \
     --per_device_train_batch_size 2 \
@@ -72,30 +81,30 @@ accelerate launch ./training_eval_emotion/run_parler_tts_training.py \
     --adam_beta2 0.99 \
     --weight_decay 0.01 \
     --lr_scheduler_type "cosine" \
-    --warmup_steps 250 \
+    --warmup_steps 500 \
     --logging_steps 2 \
     --freeze_text_encoder true \
     --audio_encoder_per_device_batch_size 8 \
     --dtype "bfloat16" \
     --seed 456 \
-    --output_dir "./ft_with_monitor/output_emotion_training" \
-    --temporary_save_to_disk "./ft_with_monitor/audio_code_tmp" \
-    --save_to_disk "./ft_with_monitor/tmp_dataset_audio" \
+    --output_dir "./${ROOT}/output_emotion_training" \
+    --temporary_save_to_disk "./${ROOT}/audio_code_tmp" \
+    --save_to_disk "./${ROOT}/tmp_dataset_audio" \
     --dataloader_num_workers 4 \
     --do_eval true \
     --predict_with_generate true \
     --include_inputs_for_metrics true \
     --group_by_length true \
     --evaluation_strategy "steps" \
-    --eval_steps 500 \
-    --eval_generation_steps 2000 \
-    --save_steps 2000 \
-    --generated_audio_save_dir "./ft_with_monitor/generated_audios_emotion" \
+    --eval_steps 200 \
+    --eval_generation_steps 200 \
+    --save_steps 500 \
+    --generated_audio_save_dir "./${ROOT}/generated_audios_emotion" \
     --post_training_generation_eval true \
     --compute_clap_similarity_metric true \
     --compute_noise_level_metric true \
     --compute_ser_metric true \
-    --ser_model_name_or_path "firdhokk/speech-emotion-recognition-with-openai-whisper-large-v3" \
+    --ser_model_name_or_path "/work/tc068/tc068/tianqi30/.cache/modelscope/models/iic/emotion2vec_plus_large" \
     --noise_level_to_compute_clean_wer 25 \
     --add_audio_samples_to_wandb false \
     --asr_model_name_or_path "distil-whisper/distil-large-v2" \
